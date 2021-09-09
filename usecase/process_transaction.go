@@ -1,14 +1,17 @@
 package usecase
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/vieiravitor/codebank/domain"
 	"github.com/vieiravitor/codebank/dto"
+	"github.com/vieiravitor/codebank/queue"
 )
 
 type UseCaseTransaction struct {
 	TransactionRepository domain.TransactionRepository
+	KafkaProducer         queue.KafkaProducer
 }
 
 func NewUseCaseTransaction(transactionRepository domain.TransactionRepository) UseCaseTransaction {
@@ -27,10 +30,21 @@ func (u UseCaseTransaction) ProcessTransaction(transactionPayload dto.Transactio
 	creditCard.Balance = ccBalanceAndLimit.Balance
 	transaction := u.buildTransaction(transactionPayload, ccBalanceAndLimit)
 	transaction.ProcessAndValidate(creditCard)
-	err = u.TransactionRepository.SaveTransaction(*transaction, *creditCard)
+	if err := u.TransactionRepository.SaveTransaction(*transaction, *creditCard); err != nil {
+		return domain.Transaction{}, err
+	}
+
+	transactionPayload.ID = transaction.ID
+	transactionPayload.CreatedAt = transaction.CreatedAt
+	transactionPayloadJson, err := json.Marshal(transactionPayload)
 	if err != nil {
 		return domain.Transaction{}, err
 	}
+
+	if err = u.KafkaProducer.Publish(string(transactionPayloadJson), "payments"); err != nil {
+		return domain.Transaction{}, err
+	}
+
 	return *transaction, nil
 }
 
